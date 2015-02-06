@@ -1,0 +1,176 @@
+#!/usr/bin/python
+
+from sys import exit
+from optparse import OptionParser
+from getpass import getuser, getpass
+from threading import Thread, BoundedSemaphore
+from signal import signal, SIGINT
+from time import sleep
+from pexpect import run
+
+# The cleanup semaphore keeps threads from printing output simultaneously
+# and allows us to know which hosts have finished
+cleanup_sem = BoundedSemaphore(value=1)
+
+# Hosts that have not finished. Used in the case of an interrupt
+uncompleted_hosts = []
+
+def main():
+    # Register our signal handler for SIGINT type signals (^C)
+    signal(SIGINT, handler)
+
+    # Handle Options
+    p = OptionParser(usage='Usage: %prog [options] --host <host> --command <cmd>', version='%prog 2.0')
+
+    # Set default option values:
+    #   user      : the user running this script
+    #   # threads : 1
+    #   timeout   : 2 minutes
+    p.set_defaults(user=getuser(), hosts=[], nohosts=[], labs=[], os=[], threads=1, timeout=120, password='')
+
+    p.add_option('-u', '--user', dest='user', help='use this user to log in')
+    p.add_option('-m', '--host', action='append', dest='hosts', help='add <hostname> to the list of hosts')
+    p.add_option('-x', '--nohost', action='append', dest='nohosts', help='remove <hostname> from the list of hosts')
+    p.add_option('-f', '--hosts', dest='hostfile', help='add hosts from <filename> to the list of hosts')
+    p.add_option('-l', '--lab', action='append', dest='labs', help='add hosts in <lab>')
+    p.add_option('-o', '--os', action='append', dest='os', help='add hosts of type <os>')
+    p.add_option('-c', '--command', dest='command', help='the command to run on all hosts')
+    p.add_option('-n', '--threads', type='int', dest='threads', help='number of threads to execute')
+    p.add_option('-p', '--nopass', action='store_true', dest='nopass', help='turn off password prompt')
+    p.add_option('-k', '--key', dest='key', help='use the specified SSH key instead of a password')
+    p.add_option('-t', '--timeout', type='int', dest='timeout', help='total time one host is allowed to run (seconds)')
+
+    # Get our options and arguments. We don't currently use arguments for anything
+    options, args = p.parse_args()
+
+    # Require a host and a command. If not given, show usage and quit
+    if (options.hosts == None and options.os == None) or options.command == None:
+        p.print_help()
+        exit(2)
+
+    # Read in extra hosts if given, and add them to hosts already specified
+    if options.hostfile != None:
+        new_hosts = [x.rstrip() for x in open(options.hostfile, 'r').readlines()]
+        options.hosts.extend(new_hosts)
+
+    # Read in lab-specific hosts if given, and add them to hosts already specified
+    for lab in options.labs:
+        try:
+            from glob import glob
+            labfile = glob('/usr/network/lab_lists/*/%s' % lab)[0]
+        except IndexError:
+            print 'No lab with name', lab
+            exit(2)
+
+        # Open the file, extend hosts
+        new_hosts = [x.rstrip() for x in open(labfile, 'r').readlines()]
+        options.hosts.extend(new_hosts)
+
+    # Read in OS-specific hosts if given, and add them to hosts already specified
+    for os in options.os:
+        osfile = '/usr/network/lab_lists/%s/all' % os
+
+        # Open the file, extend hosts
+        new_hosts = [x.rstrip() for x in open(osfile, 'r').readlines()]
+        options.hosts.extend(new_hosts)
+
+    # Remove any hosts if needed
+    for host in options.nohosts:
+        options.hosts.remove(host)
+
+    # After all hosts generated, set the global
+    # uncompleted_hosts to be a copy of all hosts
+    global uncompleted_hosts
+    uncompleted_hosts = list( options.hosts )
+
+    # Get a password to use, if needed. getpass() turns off echoing
+    if not options.nopass and not options.key:
+        options.password = getpass('Password for %s: ' % options.user)
+
+    # If number of threads specified is <= 0, set threads to the number of hosts
+    if options.threads <= 0:
+        options.threads = len(options.hosts)
+
+    # The thread pool enforces how many threads are running
+    # Its default value is the number of threads specified in options
+    thread_pool = BoundedSemaphore(value=options.threads)
+
+    # Fire off a worker for each host
+    for host in options.hosts:
+        # acquire() blocks, preventing signals from being handled.
+        # we run this loop so we can handle any signals that may occur
+        # while another thread is hanging and preventing acquiring
+        while True:
+            if thread_pool.acquire(False):
+                Thread(target=worker, args=(host, options, thread_pool)).start()
+                break
+            else:
+                sleep(1)
+
+    # Wait for all worker threads to take their host out of the global
+    # list. Without this, signals would never be acknowledged
+    while len(uncompleted_hosts) > 0:
+        sleep(1)
+
+def worker(host, options, thread_pool):
+    """
+    The worker thread forks and waits on an ssh process. It will set a
+    timeout in the ssh command to keep from running forever. After the
+    ssh command returns, print the output and release the semaphore.
+    """
+
+    # Build the ssh command
+    ssh = ['ssh']
+    # Don't warn about host key changes
+    ssh.append('-o StrictHostKeyChecking=no')
+    # Add the key/identity file if provided
+    if options.key != None:
+        ssh.append('-i %s' % options.key)
+    # Add the user, host, and remote command
+    ssh.append('-l %s' % options.user)
+    ssh.append(host)
+    ssh.append('"%s"' % options.command)
+    ssh_command = ' '.join(ssh)
+
+    # Run the command with pexpect
+    # If we see " password:", send our password
+    # If we see "permission denied", send a ctl-C to bail out
+    output = run( ssh_command,
+                  timeout = options.timeout,
+                  events  = {'(?i)password:'         : options.password + '\n',
+                             '(?i)permission denied' : ''}
+                )
+
+    # SSH is done. Allow another worker to be spawned
+    thread_pool.release()
+
+    # Get the cleanup semaphore
+    global cleanup_sem
+    cleanup_sem.acquire()
+
+    # Indicate that this host is completed
+    global uncompleted_hosts
+    uncompleted_hosts.remove(host)
+
+    # Print the ssh output and release the semaphore
+    print '%s:\n%s' % (host, output)
+    cleanup_sem.release()
+
+def handler(signum, frame):
+    """ Signal handler. """
+    print 'Responding to signal...', signum
+
+    # Get the same semaphore our worker threads use to print.
+    # We let the thread that's currently cleaning up finish
+    cleanup_sem.acquire()
+
+    # Indicate hosts that did not finish and release the semaphore
+    global uncompleted_hosts
+    print 'Uncompleted hosts:', ','.join(uncompleted_hosts)
+    cleanup_sem.release()
+
+    # Exit
+    exit(2)
+
+if __name__ == '__main__':
+    main()
