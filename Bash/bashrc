@@ -1,0 +1,187 @@
+##########################
+### Hayden's ~/.bashrc ###
+##########################
+
+
+###############
+### Aliases ###
+###############
+
+#Everyday Aliases
+
+alias rm='rm -vi'
+alias cp='cp -vi'
+alias mv='mv -vi'
+alias ls='ls -h --color=auto'
+alias ll='ls -lah'
+alias la='ls -A'
+alias l='ls -CF'
+alias dir='ls --color=auto --format=vertical'
+alias psi='ps h -eo pmem,comm | sort -nr | head'
+alias usage='du -h |sort -h'
+alias root='su -'
+alias runlevel='sudo /sbin/init'
+alias grep='grep  --color=auto'
+alias h='history|grep'
+alias f='find . |grep'
+alias p='ps aux |grep'
+alias o='gnome-open'
+
+#For Sysadmin
+alias l='ls -al'
+alias ..='cd ..'
+
+#Navigation Aliases
+
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias .....='cd ../../../..'
+
+###############
+### Prompts ###
+###############
+
+#Normal Colors
+GREEN='\[\033[0;32m\]'	#Green
+RED='\[\033[0;31m\]'	#Red
+BLUE='\[\033[0;34m\]'	#Blue
+NORMAL='\[\033[00m\]'	#Default
+
+#Bold Colors
+BGREEN='\[\033[1;32m\]'	#Bold Green
+BRED='\[\033[1;31m\]'	#Bold Red
+BBLUE='\[\033[1;34m\]'	#Bold Blue
+
+
+#Bash Prompt
+PS1="${BLUE}[${GREEN}\u${BLUE}] ${NORMAL}\h ${BLUE}(${RED}\w${BLUE})${RED}\$ ${NORMAL}"
+
+#################
+### Functions ###
+#################
+
+extract() 
+{
+	if [ -f $1 ] ; then
+		case $1 in
+			*.tar.bz2)	
+				tar xjf $1
+				rm -f $1	
+				;;
+			*.tar.gz)	
+				tar xzf $1 		
+				rm -f $1	
+				;;
+			*.bz2)		
+				bunzip2 $1 		
+				rm -f $1 	
+				;;
+			*.rar)		
+				rar x $1 		
+				rm -f $1	
+				;;
+			*.gz)		
+				gunzip $1 		
+				rm -f $1	
+				;;
+			*.tar)		
+				tar xf $1 		
+				rm - $1	
+				;;
+			*.tbz2)		
+				tar xjf $1		
+				rm -f $1	
+				;;
+			*.tgz)		
+				tar xzf $1		
+				rm -f $1	
+				;;
+			*.zip)		
+				unzip $1	 	
+				rm -f $1	
+				;;
+			*.Z)		
+				uncompress $1 	
+				rm -f $1	
+				;;
+			*)			
+				echo "'$1' cannot be extracted via extract()" 
+				;;
+		esac
+	else
+		echo "'$1' is not a valid file"
+	fi
+}
+
+
+# Get information on a process
+psgrep() 
+{
+	if [ ! -z $1 ] ; then
+		echo "Grepping for processes matching $1..."
+		ps aux | grep $1 | grep -v grep
+	else
+		echo "!! Need name to grep for"
+	fi
+}
+
+# Move a file and change directory into the new location of the file.
+mvg() 
+{
+  	if [ -d "$2" ];then
+    		mv $1 $2 && cd $2
+  	else
+    		mv $1 $2
+  	fi
+}
+
+# Copy a file and change directory into the new location of the copied file.
+cpg() 
+{
+	if [ -d "$2" ];then
+		cp $1 $2 && cd $2
+  	else
+    		cp $1 $2
+  	fi
+}
+
+# Get the size of the current directory.
+dirsize() 
+{
+	du -shx * .[a-zA-Z0-9_]* 2> /dev/null | \
+	egrep '^ *[0-9.]*[MG]' | sort -n > /tmp/list
+	egrep '^ *[0-9.]*M' /tmp/list
+	egrep '^ *[0-9.]*G' /tmp/list
+	rm -rf /tmp/list
+}
+
+# Get the network information of the machine.
+netinfo() 
+{
+        echo "--------------- Network Information ---------------"
+        /sbin/ifconfig | awk /'inet / {print "ipaddress(s): " $2}'
+        /sbin/ifconfig | awk /'broadcast / {print "broadcast: " $6}'
+        /sbin/ifconfig | awk /'ether / {print "mac(s): " $2}'
+        myip=`lynx -dump -hiddenlinks=ignore -nolist http://checkip.dyndns.org:8245/ | sed '/^$/d; s/^[ ]*//g; s/[ ]*$//g' `
+        echo "${myip}"
+        echo "---------------------------------------------------"
+}
+
+# Returns system load as percentage, i.e., '40' rather than '0.40)'.
+load()
+{
+    local SYSLOAD=$(cut -d " " -f1 /proc/loadavg | tr -d '.')
+    # System load of the current host.
+    echo "Sysload is: "$((10#$SYSLOAD))'%'      # Convert to decimal.
+}
+
+today()
+{
+  T="$(date +%s)"
+  echo $T
+}
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+	. /etc/bashrc
+fi
